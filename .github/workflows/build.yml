@@ -49,25 +49,51 @@ jobs:
       - name: 构建现代后端（net8.0-windows）
         run: dotnet build src/ModernWorker/ModernWorker.csproj -c Release
 
-      # 布局以代码为准：Unpacker.exe 从 BaseDirectory/worker 和 BaseDirectory/modern 找子进程
+      # 目录布局严格对齐上游发布包（EazUnpacker-v1.0.1-net48-Release.zip）：
+      #   顶层文件夹 / Unpacker-net48.exe / worker/ / worker/modern/ / licenses/
+      # 注意 modern 后端必须放在 worker\modern —— RecoveryPipeline 跑在 worker 进程里，
+      # 是以 worker 的 BaseDirectory 去找 modern\Unpacker.ModernWorker.exe 的。
       - name: 组装发布目录
         run: |
+          $ver = (Select-String -Path src/Unpacker.csproj -Pattern '<Version>([^<]+)</Version>').Matches[0].Groups[1].Value
           $out = 'src\bin\Release\net48'
           $modern = 'src\ModernWorker\bin\Release\net8.0-windows'
-          New-Item -ItemType Directory -Path "$out\modern" -Force | Out-Null
-          Copy-Item "$modern\*" -Destination "$out\modern" -Recurse -Force
+          $stage = "EazUnpacker-v$ver-net48-Release"
 
-          foreach ($f in 'Unpacker.exe', 'worker\Unpacker.Worker.exe', 'modern\Unpacker.ModernWorker.exe') {
-            if (-not (Test-Path "$out\$f")) { throw "发布目录缺少 $f" }
+          New-Item -ItemType Directory -Path "$out\worker\modern" -Force | Out-Null
+          Copy-Item "$modern\*" -Destination "$out\worker\modern" -Recurse -Force
+
+          # 主程序改名，与上游发布包保持一致
+          Rename-Item "$out\Unpacker.exe" 'Unpacker-net48.exe'
+          Rename-Item "$out\Unpacker.exe.config" 'Unpacker-net48.exe.config'
+
+          Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "$out\*" -Destination $stage -Recurse -Force
+
+          # 上游发布包不含调试符号和 XML 文档
+          Get-ChildItem $stage -Recurse -Include *.pdb, *.xml | Remove-Item -Force
+
+          Copy-Item LICENSE, NOTICE, README.md -Destination $stage -Force
+          New-Item -ItemType Directory -Path "$stage\licenses" | Out-Null
+          Copy-Item 'src\ThirdParty\EazFixer\LICENSE' "$stage\licenses\EazFixer-LICENSE"
+          Copy-Item 'src\ThirdParty\EazyDevirt\LICENSE' "$stage\licenses\EazyDevirt-LICENSE"
+          Copy-Item 'src\ThirdParty\Echo\LICENSE.md' "$stage\licenses\Echo-LICENSE.md"
+
+          foreach ($f in 'Unpacker-net48.exe', 'worker\Unpacker.Worker.exe', 'worker\modern\Unpacker.ModernWorker.exe',
+                         'licenses\EazFixer-LICENSE', 'LICENSE') {
+            if (-not (Test-Path "$stage\$f")) { throw "发布目录缺少 $f" }
           }
-          Get-ChildItem $out | Select-Object Name
+          Get-ChildItem $stage | Select-Object Name
 
       - name: 打包
         id: pack
         run: |
           $ver = (Select-String -Path src/Unpacker.csproj -Pattern '<Version>([^<]+)</Version>').Matches[0].Groups[1].Value
-          $name = "EazUnpacker-v$ver-net48-Release.zip"
-          Compress-Archive -Path 'src\bin\Release\net48\*' -DestinationPath $name
+          $stage = "EazUnpacker-v$ver-net48-Release"
+          $name = "$stage.zip"
+          Remove-Item $name -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path $stage -DestinationPath $name
           "version=$ver" >> $env:GITHUB_OUTPUT
           "zip=$name" >> $env:GITHUB_OUTPUT
           Get-Item $name | Select-Object Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}}
@@ -105,7 +131,7 @@ jobs:
           {
             echo "自动构建产物，基于提交 \`${GITHUB_SHA::7}\`。"
             echo
-            echo "解压后运行 \`Unpacker.exe\`。现代后端需要 .NET 8 Desktop Runtime，已内置在 \`modern/\` 目录。"
+            echo "解压后运行 \`Unpacker-net48.exe\`。现代后端需要 .NET 8 Desktop Runtime，已内置在 \`worker/modern/\`。"
             echo
             echo "| 文件 | 大小 |"
             echo "| --- | --- |"
