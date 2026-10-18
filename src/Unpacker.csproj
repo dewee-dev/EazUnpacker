@@ -10,8 +10,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <Content Include="vm-key-profiles.txt" Condition="Exists('vm-key-profiles.txt')" CopyToOutputDirectory="PreserveNewest" />
-    <Compile Remove="ThirdParty\**;ModernWorker\**;WorkerHost\**;tests\**;test-results\**" />
-    <EmbeddedResource Remove="test-results\**;tests\**" />
+    <Compile Remove="ThirdParty\**;ModernWorker\**;WorkerHost\**;tests\**;test-results\**;Gui\**" />
+    <EmbeddedResource Remove="test-results\**;tests\**;Gui\**" />
     <ProjectReference Include="ThirdParty\EazFixer\EazFixer.Engine.csproj" />
     <ProjectReference Include="ThirdParty\EazyDevirt\EazyDevirt.Engine.csproj" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />

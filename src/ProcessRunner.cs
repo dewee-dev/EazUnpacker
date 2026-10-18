@@ -22,7 +22,18 @@ internal static class ProcessRunner
                 WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(exe))!
             }
         };
-        if(progress!=null || ProgressEvents.Enabled)process.StartInfo.EnvironmentVariables[ProgressEvents.EnvironmentKey]="1";
+        if(progress!=null || ProgressEvents.Enabled)
+        {
+            try {process.StartInfo.EnvironmentVariables[ProgressEvents.EnvironmentKey]="1";}
+            catch(ArgumentException)
+            {
+                // .NET Framework 的 EnvironmentVariables 是大小写不敏感的 StringDictionary。
+                // 当前进程环境里若同时存在 http_proxy / HTTP_PROXY 这类仅大小写不同的变量
+                // （Git Bash、部分代理工具、CI 容器里很常见），读取该属性会抛 ArgumentException，
+                // 让整次解包在启动后端的瞬间直接失败。这里退化为不附加进度变量：
+                // 阶段里程碑仍由本进程上报，只是少了后端的细粒度进度。
+            }
+        }
         void Receive(string? line)
         {
             if(line==null)return;

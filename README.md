@@ -70,11 +70,30 @@ Any available recovered assembly is published to the requested output path, incl
 
 Exit codes: `0` for completion of the identified stages, `2` for incomplete recovery or source rebuilding, and `1` for input, command or processing errors.
 
+### Graphical interface
+
+`UnpackerGui.exe` (keep it in the same folder as `Unpacker-net48.exe`) is a thin WinForms front-end for the same tool. It targets .NET Framework 4.8, so it needs no extra runtime.
+
+- Pick the input/output with file dialogs, or drag a `.exe`/`.dll` onto the window — or onto `UnpackerGui.exe` itself.
+- The output path is derived from the input (`name.unpacked.dll`); edit it or choose another file.
+- `运行日志` streams the live stage/state progress; `返回信息` lists the published output, `.config`, exported C# project, string index and diagnostics directory, and `原始 JSON` holds the full result. Double-click a row to open it.
+- `复制命令` copies the equivalent command line, so anything you set up in the GUI can be replayed in a terminal.
+
+The GUI drives the CLI as a child process, so behaviour and exit codes are identical to the command line. For scripting, it also accepts arguments:
+
+```powershell
+.\UnpackerGui.exe --analyzer --run --exit-when-done "C:\input.exe"
+.\UnpackerGui.exe --run --exit-when-done "C:\input.exe" "C:\output.exe"
+```
+
+`--analyzer` selects analyzer mode, `--run` starts immediately, and `--exit-when-done` closes the window when the run finishes and returns the CLI exit code.
+
 ### Source layout
 
 | Path | Purpose |
 | --- | --- |
 | `src/` | Main program and project file |
+| `src/Gui/` | Optional WinForms front-end (`UnpackerGui.exe`) |
 | `src/ThirdParty/` | Required EazFixer, EazyDevirt and Echo source dependencies |
 | `src/WorkerHost/` | Required .NET Framework worker process |
 | `src/ModernWorker/` | Optional .NET 8 worker for modern .NET assemblies |
@@ -134,11 +153,30 @@ dotnet build src/ModernWorker/ModernWorker.csproj -c Release
 
 退出码：`0` 表示已识别阶段完成，`2` 表示恢复或源码重建不完整，`1` 表示输入、命令或处理错误。
 
+### 图形界面
+
+`UnpackerGui.exe`（与 `Unpacker-net48.exe` 放在同一目录）是同一套工具的精简 WinForms 前端，目标框架同为 .NET Framework 4.8，无需额外运行时。
+
+- 用文件对话框选择输入/输出，或直接把 `.exe`/`.dll` 拖进窗口——也可以拖到 `UnpackerGui.exe` 图标上。
+- 输出路径会按输入自动推导（`原名.unpacked.dll`），可手动修改或另选文件。
+- `运行日志` 实时显示阶段/状态进度；`返回信息` 列出输出程序、`.config`、导出的 C# 工程、字符串索引和诊断目录，`原始 JSON` 保存完整结果，双击某行即可打开对应位置。
+- `复制命令` 复制等价的命令行，界面上选好的参数可以直接拿到终端里重放。
+
+界面把命令行程序作为子进程驱动，行为与退出码和命令行完全一致。需要脚本化时也可以带参数启动：
+
+```powershell
+.\UnpackerGui.exe --analyzer --run --exit-when-done "C:\input.exe"
+.\UnpackerGui.exe --run --exit-when-done "C:\input.exe" "C:\output.exe"
+```
+
+`--analyzer` 切到分析模式，`--run` 打开后立即开始，`--exit-when-done` 跑完自动关窗并返回命令行程序的退出码。
+
 ### 源码结构
 
 | 路径 | 用途 |
 | --- | --- |
 | `src/` | 主程序源码和项目文件 |
+| `src/Gui/` | 可选的 WinForms 前端（`UnpackerGui.exe`） |
 | `src/ThirdParty/` | 编译必需的 EazFixer、EazyDevirt 与 Echo 源码依赖 |
 | `src/WorkerHost/` | 主程序必需的 .NET Framework 工作进程 |
 | `src/ModernWorker/` | 处理现代 .NET 程序集的可选 .NET 8 工作进程 |

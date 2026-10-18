@@ -43,14 +43,14 @@ jobs:
             9.0.x
             8.0.x
 
-      - name: 构建主程序（net48）
+      - name: 构建主程序与图形前端（net48）
         run: dotnet build Unpacker.slnx -c Release
 
       - name: 构建现代后端（net8.0-windows）
         run: dotnet build src/ModernWorker/ModernWorker.csproj -c Release
 
-      # 目录布局严格对齐上游发布包（EazUnpacker-v1.0.1-net48-Release.zip）：
-      #   顶层文件夹 / Unpacker-net48.exe / worker/ / worker/modern/ / licenses/
+      # 目录布局严格对齐上游发布包（EazUnpacker-v1.0.1-net48-Release.zip），额外多一个图形前端：
+      #   顶层文件夹 / Unpacker-net48.exe / UnpackerGui.exe / worker/ / worker/modern/ / licenses/
       # 注意 modern 后端必须放在 worker\modern —— RecoveryPipeline 跑在 worker 进程里，
       # 是以 worker 的 BaseDirectory 去找 modern\Unpacker.ModernWorker.exe 的。
       - name: 组装发布目录
@@ -58,10 +58,14 @@ jobs:
           $ver = (Select-String -Path src/Unpacker.csproj -Pattern '<Version>([^<]+)</Version>').Matches[0].Groups[1].Value
           $out = 'src\bin\Release\net48'
           $modern = 'src\ModernWorker\bin\Release\net8.0-windows'
+          $gui = 'src\Gui\bin\Release\net48'
           $stage = "EazUnpacker-v$ver-net48-Release"
 
           New-Item -ItemType Directory -Path "$out\worker\modern" -Force | Out-Null
           Copy-Item "$modern\*" -Destination "$out\worker\modern" -Recurse -Force
+
+          # 图形前端与主程序同目录：GUI 默认就在自己所在目录找 Unpacker-net48.exe
+          Copy-Item "$gui\UnpackerGui.exe", "$gui\UnpackerGui.exe.config" -Destination $out -Force
 
           # 主程序改名，与上游发布包保持一致
           Rename-Item "$out\Unpacker.exe" 'Unpacker-net48.exe'
@@ -80,7 +84,8 @@ jobs:
           Copy-Item 'src\ThirdParty\EazyDevirt\LICENSE' "$stage\licenses\EazyDevirt-LICENSE"
           Copy-Item 'src\ThirdParty\Echo\LICENSE.md' "$stage\licenses\Echo-LICENSE.md"
 
-          foreach ($f in 'Unpacker-net48.exe', 'worker\Unpacker.Worker.exe', 'worker\modern\Unpacker.ModernWorker.exe',
+          foreach ($f in 'Unpacker-net48.exe', 'UnpackerGui.exe', 'worker\Unpacker.Worker.exe',
+                         'worker\modern\Unpacker.ModernWorker.exe',
                          'licenses\EazFixer-LICENSE', 'LICENSE') {
             if (-not (Test-Path "$stage\$f")) { throw "发布目录缺少 $f" }
           }
@@ -133,6 +138,7 @@ jobs:
             echo
             echo "解压后运行 \`Unpacker-net48.exe\`。现代后端需要 .NET 8 Desktop Runtime，已内置在 \`worker/modern/\`。"
             echo
+            echo "图形界面：双击 \`UnpackerGui.exe\`（需与 \`Unpacker-net48.exe\`、\`worker/\` 放在同一目录）。"
             echo "| 文件 | 大小 |"
             echo "| --- | --- |"
             printf '| `%s` | %s |\n' "$ZIP" "$(du -h "$ZIP" | cut -f1)"

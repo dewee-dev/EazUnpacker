@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    EazUnpacker 的图形前端。
+    - 目标框架与主程序一致（net48），用户不需要额外装运行时；
+    - 只做「选路径 + 显示返回信息」，恢复逻辑全部在 Unpacker-net48.exe 里，
+      通过子进程调用，保证命令行与 GUI 行为完全一致。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>UnpackerGui</AssemblyName>
+    <RootNamespace>Unpacker.Gui</RootNamespace>
+    <Version>1.0.1</Version>
+    <ShouldUnsetParentConfigurationAndPlatform>false</ShouldUnsetParentConfigurationAndPlatform>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>
