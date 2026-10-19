@@ -28,6 +28,10 @@ internal static class NameRecoveryPass
         if (genericType) name = Regex.Replace(name!, @"`\d+$", "");
         if (name!.StartsWith("#=") || name.StartsWith("<") || Keywords.Contains(name)) return true;
         if(Regex.IsMatch(name,@"^[acfmv]\d{5,}$"))return true;
+        // Eazfuscator 2021+ 会把成员命名成 u0006_u2004_u200B 这种"看起来像 Unicode
+        // 转义、实际全是 ASCII"的名字。它们是合法标识符，能绕过下面的字符检查，
+        // 必须显式判为需要改名，否则会原样留在反编译结果里。
+        if (Regex.IsMatch(name, @"^u[0-9a-fA-F]{4}(_[uU]?[0-9a-fA-F]{4})*$")) return true;
         if (!(name[0] == '_' || char.IsLetter(name[0]))) return true;
         if (name.Any(c => c > 127 || !(c == '_' || char.IsLetterOrDigit(c)))) return true;
         if(Regex.IsMatch(name,@"^[A-Za-z_][A-Za-z0-9_]*(?:Field[0-9A-F]{4,}|Argument\d+|Local\d+)_*$"))return false;

@@ -35,32 +35,82 @@ namespace EazFixer.Processors
             //for every method with a body...
             foreach (MethodDef meth in Utils.GetMethodsRecursive(Ctx.Module).Where(a => a.HasBody && a.Body.HasInstructions))
             {
-                //.. and every instruction (starting at the second one) ...
-                for (int i = 1; i < meth.Body.Instructions.Count; i++)
+                var instructions = meth.Body.Instructions;
+
+                //.. and every call to the decrypter ...
+                for (int i = 0; i < instructions.Count; i++)
                 {
-                    //get this instruction and the previous
-                    var prev = meth.Body.Instructions[i - 1];
-                    var curr = meth.Body.Instructions[i];
+                    var curr = instructions[i];
+                    if (curr.OpCode.Code != Code.Call && curr.OpCode.Code != Code.Callvirt)
+                        continue;
 
-                    //if they invoke the string decrypter method with an int parameter
-                    if (prev.IsLdcI4() && curr.Operand is IMethod md && md.FullName == _decrypterMethod.FullName &&
-                        md.DeclaringType.DefinitionAssembly?.FullName == Ctx.Module.Assembly.FullName)
+                    //if it invokes the string decrypter method with an int parameter
+                    if (!(curr.Operand is IMethod md) || md.FullName != _decrypterMethod.FullName ||
+                        md.DeclaringType.DefinitionAssembly?.FullName != Ctx.Module.Assembly.FullName)
+                        continue;
+
+                    // 标准形状是 ldc.i4 紧邻 call；2026.2 有些构建会插入 nop/conv.i4，
+                    // 所以向前看最多 4 条，找到真正压栈的那条 ldc.i4。
+                    int idIndex;
+                    int val;
+                    if (!TryGetPushedInt32(instructions, i, out val, out idIndex))
+                        continue;
+
+                    //get the resulting string from either cache or invoking the decrypter method
+                    if (!dictionary.ContainsKey(val))
                     {
-                        //get the int parameter, and get the resulting string from either cache or invoking the decrypter method
-                        int val = prev.GetLdcI4Value();
-                        if (!dictionary.ContainsKey(val))
-                            dictionary[val] = (string) decrypter.Invoke(null, new object[] {val});
-                            
-                        // check if str == .ctor due to eaz using string decryptor to call constructors
-                        if (dictionary[val] == ".ctor" && Flags.VirtFix) continue;
-
-                        //replace the instructions with the string
-                        prev.OpCode = OpCodes.Nop;
-                        curr.OpCode = OpCodes.Ldstr;
-                        curr.Operand = dictionary[val];
+                        try
+                        {
+                            dictionary[val] = (string)decrypter.Invoke(null, new object[] { val });
+                        }
+                        catch (Exception)
+                        {
+                            // 单条解密失败（例如反调试对某个 id 抛异常）不影响其它调用点。
+                            continue;
+                        }
                     }
+
+                    // check if str == .ctor due to eaz using string decryptor to call constructors
+                    if (dictionary[val] == ".ctor" && Flags.VirtFix) continue;
+
+                    //replace the instructions with the string
+                    instructions[idIndex].OpCode = OpCodes.Nop;
+                    instructions[idIndex].Operand = null;
+                    curr.OpCode = OpCodes.Ldstr;
+                    curr.Operand = dictionary[val];
                 }
             }
+        }
+
+        /// <summary>
+        /// 找 call 之前压栈的 ldc.i4。标准形状是紧邻，但有些版本会插入 nop/conv.i4，
+        /// 所以向前看最多 4 条，跳过不影响整数值的指令。
+        /// </summary>
+        private static bool TryGetPushedInt32(IList<Instruction> instructions, int callIndex, out int value, out int index)
+        {
+            value = 0;
+            index = -1;
+            for (int i = callIndex - 1, steps = 0; i >= 0 && steps < 4; i--, steps++)
+            {
+                var instruction = instructions[i];
+                if (instruction.IsLdcI4())
+                {
+                    value = instruction.GetLdcI4Value();
+                    index = i;
+                    return true;
+                }
+                switch (instruction.OpCode.Code)
+                {
+                    case Code.Nop:
+                    case Code.Conv_I4:
+                    case Code.Conv_U4:
+                    case Code.Conv_I8:
+                        continue;
+                    default:
+                        return false;
+                }
+            }
+            return false;
         }
 
         protected override void CleanupInternal()

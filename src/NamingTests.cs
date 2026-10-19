@@ -49,6 +49,26 @@ internal static class NamingTests
                 throw new Exception("Callback role names or actual type shapes changed.");
             if(!File.ReadAllText(map).Contains("control.Name literal"))throw new Exception("Naming evidence was not recorded.");
         }
+
+        // Eazfuscator 2021+ 的伪 Unicode 转义名（全是 ASCII）必须被改名，
+        // 否则会原样留在反编译结果里。
+        string lookalikeInput=Path.Combine(directory,"lookalike-input.dll"),lookalikeOutput=Path.Combine(directory,"lookalike-output.dll");
+        using(var module=new ModuleDefUser("Lookalike.dll"))
+        {
+            new AssemblyDefUser("Lookalike",new Version(1,0)).Modules.Add(module);
+            var type=new TypeDefUser("u0006_u2004_u200B",module.CorLibTypes.Object.TypeDefOrRef);module.Types.Add(type);
+            var method=new MethodDefUser("u0001_u0002",MethodSig.CreateStatic(module.CorLibTypes.Void),
+                MethodImplAttributes.IL,MethodAttributes.Public|MethodAttributes.Static);
+            method.Body=new CilBody();method.Body.Instructions.Add(OpCodes.Ret.ToInstruction());type.Methods.Add(method);
+            module.Write(lookalikeInput);
+        }
+        NameRecoveryPass.Process(lookalikeInput,lookalikeOutput,Path.Combine(directory,"lookalike-map.json"));
+        using(var module=ModuleDefMD.Load(lookalikeOutput))
+        {
+            var type=module.Types.Single(t=>!t.IsGlobalModuleType);
+            if(type.Name=="u0006_u2004_u200B")throw new Exception("Eazfuscator lookalike type name was not renamed.");
+            if(type.Methods.Single().Name=="u0001_u0002")throw new Exception("Eazfuscator lookalike method name was not renamed.");
+        }
         Console.WriteLine("PASS: control/type/event/initializer names carry evidence; parameter and array type shapes are preserved.");
     }
 }

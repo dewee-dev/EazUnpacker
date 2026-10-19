@@ -27,9 +27,42 @@ namespace EazFixer
             flags |= meth.IsPublic ? BindingFlags.Public : BindingFlags.NonPublic;
             flags |= meth.IsStatic ? BindingFlags.Static : BindingFlags.Instance;
 
-            //BUG: this can fail
             Type type = ass.GetType(meth.DeclaringType.ReflectionFullName);
-            return type?.GetMethod(meth.Name, flags, null, args, null);
+            var method = type?.GetMethod(meth.Name, flags, null, args, null);
+            if (method != null)
+                return method;
+
+            // 嵌套/泛型类型的 ReflectionFullName 可能和运行时名字对不上，或者
+            // 依赖没加载导致 GetType 返回 null。退化为在全部类型里按名字+参数签名查找。
+            try
+            {
+                foreach (var candidate in ass.GetTypes())
+                {
+                    method = Match(candidate);
+                    if (method != null)
+                        return method;
+                }
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                foreach (var candidate in ex.Types)
+                {
+                    method = Match(candidate);
+                    if (method != null)
+                        return method;
+                }
+            }
+            return null;
+
+            MethodInfo Match(Type candidate)
+            {
+                if (candidate == null)
+                    return null;
+                if (candidate.Name != meth.DeclaringType.Name.String &&
+                    candidate.FullName != meth.DeclaringType.ReflectionFullName)
+                    return null;
+                return candidate.GetMethod(meth.Name, flags, null, args, null);
+            }
         }
 
         public static bool LookForReferences(ModuleDef mod, MethodDef meth) //methoddef can be generalized
