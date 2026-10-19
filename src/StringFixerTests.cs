@@ -70,6 +70,24 @@ internal static class StringFixerTests
                 throw new Exception("Strict string(int) decrypter was not preferred.");
         }
 
-        Console.WriteLine("PASS: 2026.2 plain string(int) decrypter detected; strict string(int,bool) shape still preferred.");
+        // 依赖探测必须覆盖输入目录下的子目录：Eazfuscator 把
+        // Gapotchenko.FX.dll 放在 Components\Vendor\，只搜 Components 本身会漏掉。
+        string root = Path.Combine(Path.GetTempPath(), "unpacker-dep-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "Vendor"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "Vendor", "Gapotchenko.FX.dll"), "");
+            var directories = SourceCompiler.DependencyDirectories(
+                Path.Combine(root, "Gapotchenko.Eazfuscator.NET.dll"),
+                Path.Combine(root, "Gapotchenko.Eazfuscator.NET.dll"));
+            if (!directories.Contains(Path.Combine(root, "Vendor"), StringComparer.OrdinalIgnoreCase))
+                throw new Exception("DependencyDirectories did not include the Vendor subdirectory.");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+
+        Console.WriteLine("PASS: 2026.2 plain string(int) decrypter detected; strict string(int,bool) shape still preferred; dependency subdirectories probed.");
     }
 }

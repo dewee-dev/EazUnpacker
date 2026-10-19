@@ -9,12 +9,36 @@ internal static class ClrValidator
 {
     // Run in a separate process so target identity, loaded helpers and dependencies
     // cannot hide broken references in the final output.
-    internal static int Run(string assemblyPath, string vmReportPath, string outputPath,int stage=5)
+    internal static int Run(string assemblyPath, string vmReportPath, string outputPath,int stage=5,string? originalInput=null)
     {
         ProgressEvents.Send(stage,"info","加载 CLR 检查程序集");
         var results = new List<object>();
         var bindings = new List<object>();
         var embedded = EmbeddedIdentities(assemblyPath);
+        // 恢复产物放在工作目录里，原始依赖（例如 Eazfuscator 组件布局中的
+        // Components\Vendor\Gapotchenko.FX.dll）并不在其中。不做探测的话，
+        // 所有方法都会因为同一个缺失依赖而失败，检查结果就失去意义。
+        // 只绑定原始输入目录（含子目录）里真实存在的同名程序集，真正缺失的依赖仍会让检查失败。
+        string[] dependencyDirectories = SourceCompiler.DependencyDirectories(assemblyPath, originalInput ?? assemblyPath);
+        ResolveEventHandler dependencyResolver = (_, request) =>
+        {
+            string name = new AssemblyName(request.Name).Name ?? "";
+            if (name.Length == 0) return null;
+            foreach (string directory in dependencyDirectories)
+            {
+                string candidate = Path.Combine(directory, name + ".dll");
+                if (!File.Exists(candidate)) continue;
+                AssemblyName actual;
+                try { actual = AssemblyName.GetAssemblyName(candidate); }
+                catch (BadImageFormatException) { continue; }
+                catch (FileLoadException) { continue; }
+                if (!string.Equals(actual.Name, name, StringComparison.OrdinalIgnoreCase)) continue;
+                var dependency = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => a.FullName == actual.FullName) ?? Assembly.LoadFile(candidate);
+                bindings.Add(new { Requested = request.Name, Loaded = dependency.FullName, Basis = "Original input dependency directory" });
+                return dependency;
+            }
+            return null;
+        };
         ResolveEventHandler resolver = (_, request) =>
         {
             var expected = new AssemblyName(request.Name);
@@ -28,6 +52,7 @@ internal static class ClrValidator
             return dependency;
         };
         AppDomain.CurrentDomain.AssemblyResolve += resolver;
+        AppDomain.CurrentDomain.AssemblyResolve += dependencyResolver;
         int prepared = 0, skipped = 0, failed = 0;
         var assembly = Assembly.LoadFile(Path.GetFullPath(assemblyPath));
         var entries=JArray.Parse(File.ReadAllText(vmReportPath)).Where(e => (bool)e["Restored"]!).ToArray();
@@ -59,6 +84,7 @@ internal static class ClrValidator
             progress.Report("CLR 已检查；成功 "+prepared+"，失败 "+failed,results.Count,entries.Length);
         }
         AppDomain.CurrentDomain.AssemblyResolve -= resolver;
+        AppDomain.CurrentDomain.AssemblyResolve -= dependencyResolver;
         File.WriteAllText(outputPath, JsonConvert.SerializeObject(new { Prepared = prepared, Skipped = skipped, Failed = failed, DependencyBindings = bindings, Methods = results }, Formatting.Indented));
         Console.WriteLine($"CLR validation: prepared={prepared}, skipped={skipped}, failed={failed}");
         return failed > 0 ? 1 : skipped > 0 ? 2 : 0;

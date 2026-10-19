@@ -23,6 +23,15 @@ internal static class ProgressTests
         if(!raw.Contains("raw fixture stdout") || !raw.Contains("raw fixture stderr") || !raw.Contains("{malformed}")
             || File.ReadAllText(outer).Contains("raw fixture stdout"))throw new Exception("Raw backend log/relay policy changed.");
         Console.WriteLine("PASS: nested UTF-8 progress arrives before child exit; stdout/stderr retained on disk without raw console flooding.");
+        // 环境继承：ProcessStartInfo.EnvironmentVariables 在遇到仅大小写不同的重复变量
+        // （http_proxy / HTTP_PROXY）时会把环境截断，子进程会丢掉 PATH 且拿不到进度开关。
+        string envLog=Path.Combine(root,"env-child.log");
+        if(ProcessRunner.Run(System.Reflection.Assembly.GetExecutingAssembly().Location,new[]{"--test-env"},envLog,10,_=>{})!=0)
+            throw new Exception("Environment probe child failed to run.");
+        string envText=File.ReadAllText(envLog);
+        if(!envText.Contains("PATH-OK") || !envText.Contains("PROGRESS-OK"))
+            throw new Exception("Child process did not inherit a complete environment: "+envText.Replace("\r"," ").Replace("\n"," "));
+        Console.WriteLine("PASS: child processes inherit a complete environment and the progress switch even with case-only duplicate variables.");
         var failure=new List<ProgressEvent>();
         code=ProcessRunner.Run(System.Reflection.Assembly.GetExecutingAssembly().Location,new[]{"source",Path.Combine(root,"missing.dll"),Path.Combine(root,"missing-source"),Path.Combine(root,"missing-report.json"),Path.Combine(root,"missing.dll")},
             Path.Combine(root,"progress-failure.log"),10,failure.Add);

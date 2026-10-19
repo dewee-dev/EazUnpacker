@@ -170,7 +170,29 @@ internal static class SourceCompiler
                     && Directory.Exists(directory))directories.Add(directory);
             }
         }
+        // Eazfuscator 的组件布局把依赖放在 Vendor/ 等子目录（例如
+        // Components\Gapotchenko.Eazfuscator.NET.dll 依赖
+        // Components\Vendor\Gapotchenko.FX.dll）。仅搜输入目录本身会漏掉，
+        // 这里在原始目录下做有界递归，把这些子目录也纳入探测路径。
+        AddSubdirectories(originalDirectory, directories, 0);
         return directories.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
+    private static void AddSubdirectories(string root, List<string> directories, int depth)
+    {
+        const int MaxDepth = 4, MaxDirectories = 128;
+        if (depth >= MaxDepth || directories.Count >= MaxDirectories)
+            return;
+        IEnumerable<string> children;
+        try { children = Directory.EnumerateDirectories(root); }
+        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { return; }
+        foreach (string child in children)
+        {
+            if (directories.Count >= MaxDirectories)
+                return;
+            directories.Add(child);
+            AddSubdirectories(child, directories, depth + 1);
+        }
     }
 
     private sealed class DecompilerProgress : IProgress<DecompilationProgress>
@@ -179,29 +201,59 @@ internal static class SourceCompiler
         public void Report(DecompilationProgress value)=>counter.Report("源码导出"+(string.IsNullOrEmpty(value.Status)?"":"："+value.Status),value.UnitsCompleted,value.TotalUnits);
     }
 
-    private static int ExportModuleInitializer(string assembly,string output,bool framework)
+    private static bool IsPlainInitializerCall(dnlib.DotNet.MethodDef method) =>
+        method.IsStatic && method.HasBody && method.MethodSig!=null && method.MethodSig.Params.Count==0
+        && method.MethodSig.RetType.ElementType==dnlib.DotNet.ElementType.Void
+        && !method.HasGenericParameters && method.DeclaringType!=null && !method.DeclaringType.HasGenericParameters;
+
+    internal static int ExportModuleInitializer(string assembly,string output,bool framework)
     {
         using var module=dnlib.DotNet.ModuleDefMD.Load(assembly);
         var global=module.GlobalType;
         if(global==null)return 0;
-        if(global.Fields.Count!=0 || global.Methods.Any(m=>!m.IsStaticConstructor))
-            throw new NotSupportedException("Global fields or methods require explicit C# export; refusing to omit them.");
+        if(global.Fields.Count!=0)
+            throw new NotSupportedException("Global fields require explicit C# export; refusing to omit them.");
         var initializer=global.FindStaticConstructor();
         if(initializer==null)return 0;
-        var calls=new List<string>();
-        var instructions=initializer.Body?.Instructions ?? throw new NotSupportedException("Module initializer has no IL body.");
-        if(initializer.Body!.ExceptionHandlers.Count!=0 || initializer.Body.Variables.Count!=0
-            || instructions.Count==0 || instructions.Last().OpCode.Code!=dnlib.DotNet.Emit.Code.Ret)
-            throw new NotSupportedException("Complex module initializer requires explicit C# export.");
-        foreach(var instruction in instructions.Take(instructions.Count-1))
+        // <Module> 里除 .cctor 之外的静态无参 void 方法（Eazfuscator 会把模块初始化
+        // 拆成若干辅助方法）只在模块初始化链里被调用，就地展开即可，不必为了它们
+        // 导出一个 C# 无法表达的全局类型成员。
+        var helpers=new HashSet<dnlib.DotNet.MethodDef>(global.Methods.Where(m=>!m.IsStaticConstructor));
+        foreach(var helper in helpers)
         {
-            if(instruction.OpCode.Code==dnlib.DotNet.Emit.Code.Nop)continue;
-            if(instruction.OpCode.Code!=dnlib.DotNet.Emit.Code.Call || instruction.Operand is not dnlib.DotNet.MethodDef method
-                || !method.IsStatic || method.MethodSig.Params.Count!=0 || method.MethodSig.RetType.ElementType!=dnlib.DotNet.ElementType.Void
-                || method.HasGenericParameters || method.DeclaringType.HasGenericParameters)
-                throw new NotSupportedException("Unsupported module initialization instruction: "+instruction);
-            calls.Add("        global::"+method.DeclaringType.ReflectionFullName.Replace('+','.')+"."+method.Name+"();");
+            if(!IsPlainInitializerCall(helper))
+                throw new NotSupportedException("Unsupported global method: "+helper.FullName);
         }
+        var callers=module.GetTypes().SelectMany(t=>t.Methods).Where(m=>m.HasBody&&m.Body.HasInstructions)
+            .SelectMany(m=>m.Body.Instructions.Select(i=>(Method:m,Instruction:i)))
+            .Where(x=>x.Instruction.Operand is dnlib.DotNet.MethodDef target && helpers.Contains(target)).ToArray();
+        if(callers.Any(x=>x.Method!=initializer && !helpers.Contains(x.Method)))
+            throw new NotSupportedException("Global methods are referenced outside the module initializer; explicit C# export required.");
+        var calls=new List<string>();
+        var emitted=new HashSet<dnlib.DotNet.MethodDef>{initializer};
+        void Emit(dnlib.DotNet.MethodDef method)
+        {
+            var body=method.Body ?? throw new NotSupportedException("Module initializer has no IL body.");
+            var instructions=body.Instructions;
+            if(body.ExceptionHandlers.Count!=0 || body.Variables.Count!=0
+                || instructions.Count==0 || instructions.Last().OpCode.Code!=dnlib.DotNet.Emit.Code.Ret)
+                throw new NotSupportedException("Complex module initializer requires explicit C# export.");
+            foreach(var instruction in instructions.Take(instructions.Count-1))
+            {
+                if(instruction.OpCode.Code==dnlib.DotNet.Emit.Code.Nop)continue;
+                if(instruction.OpCode.Code!=dnlib.DotNet.Emit.Code.Call || instruction.Operand is not dnlib.DotNet.MethodDef target)
+                    throw new NotSupportedException("Unsupported module initialization instruction: "+instruction);
+                if(helpers.Contains(target))
+                {
+                    if(emitted.Add(target))Emit(target);
+                    continue;
+                }
+                if(!IsPlainInitializerCall(target))
+                    throw new NotSupportedException("Unsupported module initialization instruction: "+instruction);
+                calls.Add("        global::"+target.DeclaringType.ReflectionFullName.Replace('+','.')+"."+target.Name+"();");
+            }
+        }
+        Emit(initializer);
         if(calls.Count==0)return 0;
         string source="internal static class UnpackModuleInitializer\n{\n    [System.Runtime.CompilerServices.ModuleInitializer]\n    internal static void Initialize()\n    {\n"+string.Join("\n",calls)+"\n    }\n}\n";
         if(framework)source+="namespace System.Runtime.CompilerServices\n{\n    [global::System.AttributeUsage(global::System.AttributeTargets.Method)]\n    internal sealed class ModuleInitializerAttribute : global::System.Attribute { }\n}\n";

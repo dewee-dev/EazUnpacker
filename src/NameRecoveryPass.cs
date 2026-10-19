@@ -307,6 +307,11 @@ internal static class NameRecoveryPass
                 if(resource.Name.String.StartsWith(originalReflectionNames[type]+".",StringComparison.Ordinal))
                 {resource.Name=type.ReflectionFullName+resource.Name.String.Substring(originalReflectionNames[type].Length);break;}
         if(module.PdbState==null)module.CreatePdbState(PdbFileKind.PortablePDB);
+        // 控制流折叠会改变分支距离，原来的短分支(br.s)可能越界，写盘时抛
+        // "Target instruction is too far away"。写盘前统一转成长分支。
+        foreach(var method in module.GetTypes().SelectMany(t=>t.Methods))
+            if(method.HasBody && method.Body.HasInstructions)
+                method.Body.SimplifyBranches();
         // Reconstructed property rows cannot preserve their original row order.
         // Portable PDBs cannot reference the resulting PropertyPtr/EventPtr tables.
         AsyncRecoveryPass.Process(module,Path.Combine(Path.GetDirectoryName(mapPath)!,"async-recovery.json"));

@@ -45,6 +45,12 @@ A command-line unpacker and deobfuscator for Eazfuscator.NET assemblies, with IL
 
 Generated names improve readability; they do not recover the author's original names when original symbols are unavailable. Support depends on the protections and assembly being processed.
 
+### Notes on 2026.2
+
+- The string decrypter of 2026.2 exposes `string(int)` only; the `string(int, bool)` overload is no longer emitted. Both shapes are detected, and the strict shape still wins when present.
+- Obfuscated identifiers written as pseudo-Unicode escapes (`u0006_u2004_u200B`) or containing zero-width characters are treated as generated names and renamed.
+- Dependencies are probed in subdirectories of the input, so layouts such as `Components\Vendor\Gapotchenko.FX.dll` resolve during the string, post-VM and CLR validation stages.
+
 ### Build
 
 Requires Windows, .NET Framework 4.8, and a .NET SDK with `.slnx` support (9.0.200 or newer). The first build restores NuGet dependencies.
@@ -127,6 +133,12 @@ The combined project is licensed under GPL-3.0; see [LICENSE](LICENSE). Third-pa
 - 通过命令行显示处理进度，支持 JSON 分析输出。
 
 缺少原始符号时，生成的名称用于改善可读性，不等于恢复了原作者命名。具体支持情况取决于目标程序集及其保护方式。
+
+### 2026.2 说明
+
+- 2026.2 的字符串解密器只保留 `string(int)`，不再生成 `string(int, bool)` 重载。两种形态都能识别；同时存在时仍优先严格形态。
+- 以伪 Unicode 转义（`u0006_u2004_u200B`）书写或含零宽字符的标识符按生成名处理，会被改名。
+- 依赖会在输入目录的子目录里探测，`Components\Vendor\Gapotchenko.FX.dll` 这类布局在字符串恢复、VM 后复处理与 CLR 校验阶段都能正常解析。
 
 ### 构建
 

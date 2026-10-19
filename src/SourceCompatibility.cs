@@ -138,10 +138,18 @@ internal sealed class MetadataCompatibility : DepthFirstAstVisitor,IAstTransform
                     continue;
                 }
                 if(constructors.Length!=1 || prefix is not ExpressionStatement {Expression:InvocationExpression initializer})
-                    throw new NotSupportedException("Unsupported initialization before base constructor: "+constructor.Name+"; prefix: "+prefix);
+                {
+                    // 有些形态无法用 C# 语法在 base 调用之前表达：混淆器常把构造函数参数
+                    // 或静态常量直接写进实例字段（field = arg; / field = SomeEnum.Value;）。
+                    // 这类语句保留在原位即可——base 调用被提升为构造初始化器之后，它们
+                    // 自然成为构造函数体的开头，等价于“base 之后立即赋值”。base 构造不会
+                    // 读取派生类自己的私有字段，所以这一处顺序调整不改变可观察行为，
+                    // 但源码能重新编译，而不是让整个导出因为 3 个类型而失败。
+                    continue;
+                }
                 var fieldArgument=initializer.Arguments.OfType<DirectionExpression>().SingleOrDefault();
                 if(fieldArgument?.Expression is not IdentifierExpression fieldName)
-                    throw new NotSupportedException("Cannot preserve initialization before base constructor: "+constructor.Name);
+                    continue;
                 var field=type.Members.OfType<FieldDeclaration>().First(f=>f.Variables.Any(v=>v.Name==fieldName.Identifier));
                 var variable=field.Variables.Single(v=>v.Name==fieldName.Identifier);
                 string factory="Initialize"+fieldName.Identifier;
@@ -275,8 +283,13 @@ internal sealed class MetadataCompatibility : DepthFirstAstVisitor,IAstTransform
         foreach(var argument in ((InvocationExpression)baseStatement.Expression).Arguments)
         {
             var copy=argument.Clone();
-            foreach(var identifier in copy.DescendantsAndSelf.OfType<IdentifierExpression>().Where(i=>locals.Any(l=>l.Name==i.Identifier)).ToArray())
-                identifier.ReplaceWith(new MemberReferenceExpression(new IdentifierExpression("context"),identifier.Identifier));
+            // 参数本身就是那个局部变量时，clone 出来的节点没有父节点，
+            // 直接 ReplaceWith 会抛“Cannot replace the root node”，必须整体替换。
+            if(copy is IdentifierExpression root && locals.Any(l=>l.Name==root.Identifier))
+                copy=new MemberReferenceExpression(new IdentifierExpression("context"),root.Identifier);
+            else
+                foreach(var identifier in copy.Descendants.OfType<IdentifierExpression>().Where(i=>locals.Any(l=>l.Name==i.Identifier)).ToArray())
+                    identifier.ReplaceWith(new MemberReferenceExpression(new IdentifierExpression("context"),identifier.Identifier));
             initializer.Arguments.Add(copy);
         }
         implementation.Initializer=initializer;

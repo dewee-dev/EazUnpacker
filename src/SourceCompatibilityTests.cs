@@ -36,6 +36,43 @@ internal static class SourceCompatibilityTests
         if(paths.Length!=3 || !paths.Contains(Path.Combine(fixture,"Components","Vendor")) || paths.Contains(root))
             throw new Exception("Config probing paths were not resolved within the application directory.");
         Console.WriteLine("PASS: pre-base constant blocks/temporary field stores and contained config probing paths.");
+        CheckModuleInitializerHelper(root);
+    }
+
+    private static void CheckModuleInitializerHelper(string root)
+    {
+        // <Module> 里除 .cctor 之外的静态无参 void 方法（混淆器拆出来的模块初始化辅助方法）
+        // 只被 .cctor 调用，导出时必须就地展开，否则整个源码导出会失败。
+        string path=Path.Combine(root,"global-init.dll"),output=Path.Combine(root,"global-init-src");
+        Directory.CreateDirectory(output);
+        using(var module=new dnlib.DotNet.ModuleDefUser("GlobalInit.dll"))
+        {
+            var assembly=new dnlib.DotNet.AssemblyDefUser("GlobalInit",new Version(1,0));assembly.Modules.Add(module);
+            var target=new dnlib.DotNet.TypeDefUser("GlobalInit","Target",module.CorLibTypes.Object.TypeDefOrRef);module.Types.Add(target);
+            var init=new dnlib.DotNet.MethodDefUser("Init",dnlib.DotNet.MethodSig.CreateStatic(module.CorLibTypes.Void),
+                dnlib.DotNet.MethodImplAttributes.IL,dnlib.DotNet.MethodAttributes.Public|dnlib.DotNet.MethodAttributes.Static);
+            init.Body=new dnlib.DotNet.Emit.CilBody();init.Body.Instructions.Add(dnlib.DotNet.Emit.OpCodes.Ret.ToInstruction());target.Methods.Add(init);
+            var global=module.GlobalType;
+            dnlib.DotNet.MethodDef Global(string name,dnlib.DotNet.IMethod operand,dnlib.DotNet.MethodAttributes attributes)
+            {
+                var method=new dnlib.DotNet.MethodDefUser(name,dnlib.DotNet.MethodSig.CreateStatic(module.CorLibTypes.Void),
+                    dnlib.DotNet.MethodImplAttributes.IL,attributes);
+                method.Body=new dnlib.DotNet.Emit.CilBody();
+                if(operand!=null)method.Body.Instructions.Add(dnlib.DotNet.Emit.OpCodes.Call.ToInstruction(operand));
+                method.Body.Instructions.Add(dnlib.DotNet.Emit.OpCodes.Ret.ToInstruction());
+                global.Methods.Add(method);return method;
+            }
+            var helper=Global("f0659e5905454a5e99b9752afc78b700",init,dnlib.DotNet.MethodAttributes.Private|dnlib.DotNet.MethodAttributes.Static);
+            Global(".cctor",helper,dnlib.DotNet.MethodAttributes.Private|dnlib.DotNet.MethodAttributes.Static
+                |dnlib.DotNet.MethodAttributes.SpecialName|dnlib.DotNet.MethodAttributes.RTSpecialName);
+            module.Write(path);
+        }
+        if(SourceCompiler.ExportModuleInitializer(path,output,false)!=1)
+            throw new Exception("Module initializer helper was not inlined.");
+        string source=File.ReadAllText(Path.Combine(output,"UnpackModuleInitializer.cs"));
+        if(!source.Contains("GlobalInit.Target.Init()") || source.Contains("<Module>"))
+            throw new Exception("Global helper export produced an invalid initializer: "+source);
+        Console.WriteLine("PASS: <Module> helper methods are inlined into the exported module initializer.");
     }
 
     private static ExpressionStatement BaseCall()=>new(new InvocationExpression(new MemberReferenceExpression(new BaseReferenceExpression(),".ctor")));

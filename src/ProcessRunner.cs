@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Collections.Specialized;
 using System.Diagnostics;
 using System.Text;
 
@@ -22,18 +24,7 @@ internal static class ProcessRunner
                 WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(exe))!
             }
         };
-        if(progress!=null || ProgressEvents.Enabled)
-        {
-            try {process.StartInfo.EnvironmentVariables[ProgressEvents.EnvironmentKey]="1";}
-            catch(ArgumentException)
-            {
-                // .NET Framework 的 EnvironmentVariables 是大小写不敏感的 StringDictionary。
-                // 当前进程环境里若同时存在 http_proxy / HTTP_PROXY 这类仅大小写不同的变量
-                // （Git Bash、部分代理工具、CI 容器里很常见），读取该属性会抛 ArgumentException，
-                // 让整次解包在启动后端的瞬间直接失败。这里退化为不附加进度变量：
-                // 阶段里程碑仍由本进程上报，只是少了后端的细粒度进度。
-            }
-        }
+        if(progress!=null || ProgressEvents.Enabled)ApplyEnvironment(process.StartInfo);
         void Receive(string? line)
         {
             if(line==null)return;
@@ -66,6 +57,31 @@ internal static class ProcessRunner
         process.WaitForExit();
         lock (guard) { if (!exited) writer.WriteLine("Worker timeout; process tree terminated."); writer.Flush(); }
         return exited ? process.ExitCode : 124;
+    }
+
+    // .NET Framework 的 ProcessStartInfo.EnvironmentVariables 是大小写不敏感的 StringDictionary，
+    // 首次访问时会把当前进程环境整体复制进去。若环境里同时存在 http_proxy / HTTP_PROXY 这类
+    // 仅大小写不同的变量（Git Bash、代理工具、CI 容器、Docker 里很常见），复制到重复键会抛
+    // ArgumentException，并留下一个被截断的集合——PATH、TEMP、SystemRoot 等都可能丢在截断点之后。
+    // 旧代码把这个异常吞掉了，结果既没给子进程设上进度开关（后端细粒度进度全部丢失），
+    // 又让子进程继承了一份残缺的环境。这里在异常后补齐缺失项，再写入进度开关。
+    private static void ApplyEnvironment(ProcessStartInfo info)
+    {
+        StringDictionary variables;
+        try { variables = info.EnvironmentVariables; }
+        catch(ArgumentException)
+        {
+            // 字段已被赋成非 null 的半成品，二次访问不再抛异常。
+            try { variables = info.EnvironmentVariables; }
+            catch(ArgumentException) { return; }
+            var known = new HashSet<string>(variables.Keys.Cast<string>(), StringComparer.OrdinalIgnoreCase);
+            foreach(DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            {
+                string key = (string)entry.Key;
+                if(known.Add(key)) variables[key] = (string)entry.Value;
+            }
+        }
+        variables[ProgressEvents.EnvironmentKey] = "1";
     }
 
     // Windows CommandLineToArgvW quoting, including trailing backslashes and embedded quotes.

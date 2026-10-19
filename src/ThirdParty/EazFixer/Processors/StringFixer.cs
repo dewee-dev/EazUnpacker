@@ -32,6 +32,9 @@ namespace EazFixer.Processors
             //store it so we can use it in the stacktrace patch
             StacktracePatcher.PatchStackTraceGetMethod.MethodToReplace = decrypter;
 
+            Exception firstError = null;
+            int succeeded = 0;
+
             //for every method with a body...
             foreach (MethodDef meth in Utils.GetMethodsRecursive(Ctx.Module).Where(a => a.HasBody && a.Body.HasInstructions))
             {
@@ -62,10 +65,14 @@ namespace EazFixer.Processors
                         try
                         {
                             dictionary[val] = (string)decrypter.Invoke(null, new object[] { val });
+                            succeeded++;
                         }
-                        catch (Exception)
+                        catch (Exception ex)
                         {
-                            // 单条解密失败（例如反调试对某个 id 抛异常）不影响其它调用点。
+                            // 单条解密失败（例如反调试对某个 id 抛异常）不影响其它调用点，
+                            // 但全部失败时要把真实原因抛出去，不能静默报成功/0。
+                            if (firstError == null)
+                                firstError = ex;
                             continue;
                         }
                     }
@@ -80,6 +87,9 @@ namespace EazFixer.Processors
                     curr.Operand = dictionary[val];
                 }
             }
+
+            if (succeeded == 0 && firstError != null)
+                throw new Exception("The string decrypter could not be invoked for any id: " + firstError.Message, firstError);
         }
 
         /// <summary>

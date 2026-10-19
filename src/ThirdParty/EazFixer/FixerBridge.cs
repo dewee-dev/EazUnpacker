@@ -56,6 +56,10 @@ namespace EazFixer
                     results.Add(new FixerStageResult{Name="ControlFlow",Status="success",Detail="Constant branches folded; protected regions preserved.",Changes=flowChanges});
                 }
                 progress?.Invoke("写入恢复程序集","start",0);
+                // ControlFlowPass 折叠分支后可能让短分支越界，写盘前统一转长分支。
+                foreach (var method in ctx.Module.GetTypes().SelectMany(t => t.Methods))
+                    if (method.HasBody && method.Body.HasInstructions)
+                        method.Body.SimplifyBranches();
                 ctx.Module.Write(Flags.OutFile, new ModuleWriterOptions(ctx.Module) { MetadataOptions = { Flags = MetadataFlags.PreserveAll } });
                 return results;
             }

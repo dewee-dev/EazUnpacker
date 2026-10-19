@@ -103,7 +103,7 @@ internal static class RecoveryPipeline
                         string final = Path.Combine(dir, Path.GetFileNameWithoutExtension(target) + "-unpacked" + Path.GetExtension(target));
                         string stringsReport = Path.Combine(dir, "post-vm-strings.json");
                         ProgressEvents.Send(3,"info","还原后的字符串与控制流复处理");
-                        int stringsCode = ProcessRunner.Run(Assembly.GetExecutingAssembly().Location, new[] { "--strings-worker", cleaned, final, stringsReport }, Path.Combine(dir, "post-vm-strings.log"), Math.Max(1, timeout / 4));
+                        int stringsCode = ProcessRunner.Run(Assembly.GetExecutingAssembly().Location, new[] { "--strings-worker", cleaned, final, stringsReport, input }, Path.Combine(dir, "post-vm-strings.log"), Math.Max(1, timeout / 4));
                         if (stringsCode == 0 && File.Exists(final) && File.Exists(stringsReport))
                         {
                             var stages = JsonConvert.DeserializeObject<List<StageResult>>(File.ReadAllText(stringsReport))!;
@@ -170,10 +170,20 @@ internal static class RecoveryPipeline
                 string clrReport = Path.Combine(dir, "clr-validation.json");
                 ProgressEvents.Send(5,"start","隔离 CLR 准备检查（不调用业务方法）");
                 int code = ProcessRunner.Run(Assembly.GetExecutingAssembly().Location,
-                    new[] { "--validate-worker", cleaned, vmReport, clrReport }, Path.Combine(dir, "clr-validation.log"), Math.Max(1, timeout / 4));
-                result.Stages.Add(new StageResult { Name = "CLRValidation", Status = code == 0 ? "success" : "failed",
-                    Detail = "Final recovered methods prepared by CLR in an isolated process; exit " + code + "; see clr-validation.json/log. No business methods invoked." });
-                ProgressEvents.Send(5,code==0?"success":"error","恢复后 CLR 检查退出码 "+code+"；日志："+Path.Combine(dir,"clr-validation.log"));
+                    new[] { "--validate-worker", cleaned, vmReport, clrReport, "5", input }, Path.Combine(dir, "clr-validation.log"), Math.Max(1, timeout / 4));
+                // 少部分方法失败时如实报“部分完成”，而不是把 156/163 的成绩记成整段失败。
+                int clrPrepared = 0, clrFailed = 0;
+                try
+                {
+                    var report = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(clrReport));
+                    clrPrepared = (int?)report["Prepared"] ?? 0;
+                    clrFailed = (int?)report["Failed"] ?? 0;
+                }
+                catch (Exception ex) when (ex is IOException || ex is Newtonsoft.Json.JsonException) { }
+                string clrStatus = code == 0 ? "success" : clrPrepared > 0 && clrFailed > 0 ? "partial" : "failed";
+                result.Stages.Add(new StageResult { Name = "CLRValidation", Status = clrStatus, Changes = clrPrepared,
+                    Detail = "Final recovered methods prepared by CLR in an isolated process; prepared " + clrPrepared + ", failed " + clrFailed + "; exit " + code + "; see clr-validation.json/log. No business methods invoked." });
+                ProgressEvents.Send(5,code==0?"success":clrStatus=="partial"?"warning":"error","恢复后 CLR 检查退出码 "+code+"；已准备 "+clrPrepared+"，失败 "+clrFailed+"；日志："+Path.Combine(dir,"clr-validation.log"));
             }
             else ProgressEvents.Send(5,"info","没有待验证的 VM 方法，跳过 CLR 准备检查");
             result.Stages.Add(new StageResult { Name = "Validation", Status = "success", Detail = "Output metadata reloaded. Full business/UI equivalence requires additional checks." });

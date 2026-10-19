@@ -22,7 +22,7 @@ internal static class WorkerEntry
             switch(args[0])
             {
                 case "pipeline": return RecoveryPipeline.Run(args);
-                case "--validate-worker": return ClrValidator.Run(args[1],args[2],args[3],args.Length>4?int.Parse(args[4]):5);
+                case "--validate-worker": return ClrValidator.Run(args[1],args[2],args[3],args.Length>4?int.Parse(args[4]):5,args.Length>5?args[5]:null);
                 case "--vm-worker":
                     ProgressEvents.Send(3,"info","加载 VM 还原后端");
                     var vmProgress=new ProgressEvents.Counter(3);
@@ -52,6 +52,9 @@ internal static class WorkerEntry
                     System.Threading.Thread.Sleep(1400);
                     ProgressEvents.Send(3,"progress","实时测试：结束",2,2);return 0;
                 case "--test-progress-relay": return ProcessRunner.Run(Assembly.GetExecutingAssembly().Location,new[]{"--test-progress"},args[1],10);
+                case "--test-env":
+                    Console.WriteLine(string.IsNullOrEmpty(Environment.GetEnvironmentVariable("PATH"))?"PATH-MISSING":"PATH-OK");
+                    Console.WriteLine(ProgressEvents.Enabled?"PROGRESS-OK":"PROGRESS-MISSING");return 0;
                 case "--test-sleep-tree":
                     using(var child=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Assembly.GetExecutingAssembly().Location,"--test-sleep"){UseShellExecute=false,CreateNoWindow=true}))
                     {Console.WriteLine("Fixture child: "+child!.Id);Console.Out.Flush();System.Threading.Thread.Sleep(30000);}return 0;
