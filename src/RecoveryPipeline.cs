@@ -186,6 +186,20 @@ internal static class RecoveryPipeline
                 ProgressEvents.Send(5,code==0?"success":clrStatus=="partial"?"warning":"error","恢复后 CLR 检查退出码 "+code+"；已准备 "+clrPrepared+"，失败 "+clrFailed+"；日志："+Path.Combine(dir,"clr-validation.log"));
             }
             else ProgressEvents.Send(5,"info","没有待验证的 VM 方法，跳过 CLR 准备检查");
+            // Eazfuscator 会删掉枚举成员，代码里只剩 (EnumX)N 强转。放在这里是因为
+            // 新增字段会改变 Field 表的 RID，而前面各阶段用 PreserveAll 保 token；
+            // 补回成员后 dnSpy 与 ILSpy 都会直接显示 EnumX.ValueN。
+            string enumOutput = Path.Combine(dir, Path.GetFileNameWithoutExtension(cleaned) + "-enums" + Path.GetExtension(cleaned));
+            int enumMembers = EnumRecoveryPass.Rewrite(cleaned, enumOutput);
+            if (enumMembers > 0 && File.Exists(enumOutput))
+            {
+                cleaned = enumOutput;
+                RememberOutput(result, cleaned, dir);
+                result.Stages.Add(new StageResult { Name = "Enums", Status = "success", Changes = enumMembers,
+                    Detail = "Member-less enum types regained literal members observed in field stores, arguments, returns and comparisons; original member names are not recoverable." });
+                ProgressEvents.Send(5,"info","枚举成员恢复 "+enumMembers+" 项");
+            }
+            else ProgressEvents.Send(5,"info","没有需要补回成员的枚举");
             result.Stages.Add(new StageResult { Name = "Validation", Status = "success", Detail = "Output metadata reloaded. Full business/UI equivalence requires additional checks." });
             bool changed = result.Stages.Any(s => s.Changes > 0);
             bool pending = result.Stages.Any(s => s.Status is "failed" or "skipped" or "partial") || result.After.VirtualizedMethods.Count > 0 ||

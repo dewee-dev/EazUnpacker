@@ -50,6 +50,7 @@ Generated names improve readability; they do not recover the author's original n
 - The string decrypter of 2026.2 exposes `string(int)` only; the `string(int, bool)` overload is no longer emitted. Both shapes are detected, and the strict shape still wins when present.
 - Obfuscated identifiers written as pseudo-Unicode escapes (`u0006_u2004_u200B`) or containing zero-width characters are treated as generated names and renamed.
 - Dependencies are probed in subdirectories of the input, so layouts such as `Components\Vendor\Gapotchenko.FX.dll` resolve during the string, post-VM and CLR validation stages.
+- Enum types whose members were stripped by the obfuscator regain `Value<n>` literal members, derived from the constants actually used in field stores, arguments, returns and comparisons. Original member names cannot be recovered. Because these members are added, `ToString()` and `Enum.GetNames()` return the generated names for values that previously had no name at all.
 
 ### Build
 
@@ -139,6 +140,7 @@ The combined project is licensed under GPL-3.0; see [LICENSE](LICENSE). Third-pa
 - 2026.2 的字符串解密器只保留 `string(int)`，不再生成 `string(int, bool)` 重载。两种形态都能识别；同时存在时仍优先严格形态。
 - 以伪 Unicode 转义（`u0006_u2004_u200B`）书写或含零宽字符的标识符按生成名处理，会被改名。
 - 依赖会在输入目录的子目录里探测，`Components\Vendor\Gapotchenko.FX.dll` 这类布局在字符串恢复、VM 后复处理与 CLR 校验阶段都能正常解析。
+- 成员被混淆器删光的枚举会按 IL 里实际使用的常量补回 `Value<n>` 成员（来源：字段赋值、调用参数、返回值与比较）。原成员名无法恢复；由于补回了成员，`ToString()` 与 `Enum.GetNames()` 对这些原本没有名字的取值会返回生成的名字。
 
 ### 构建
 

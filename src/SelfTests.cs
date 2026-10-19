@@ -22,6 +22,7 @@ internal static class SelfTests
             NamingTests.Run(root);
             AsyncRecoveryTests.Run(root);
             StringFixerTests.Run();
+            EnumRecoveryTests.Run();
             ProgressTests.Run(root);
             if(!WorkerDesktop.CurrentName.StartsWith("Unpacker-",StringComparison.Ordinal))throw new Exception("Worker is on the interactive desktop.");
             Console.WriteLine("PASS: worker is on a private non-interactive desktop: "+WorkerDesktop.CurrentName);

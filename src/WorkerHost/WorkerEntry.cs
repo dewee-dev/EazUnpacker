@@ -40,6 +40,28 @@ internal static class WorkerEntry
                 case "source": ProgressEvents.Send(6,"info","加载待反编译程序集");return SourceCompiler.Run(args[1],args[2],args[3],args[4]);
                 case "string-index": return StringSearchIndex.Run(args[1],args[2],args[3]);
                 case "--names-worker": NameRecoveryPass.Process(args[1],args[2],args[3]);return 0;
+                case "--enum-worker": return EnumRecoveryPass.Rewrite(args[1],args[2]);
+                case "--enum-probe":
+                    using(var module=dnlib.DotNet.ModuleDefMD.Load(args[1]))
+                    {
+                        var collected=EnumRecoveryPass.Collect(module);
+                        var rows=module.GetTypes().Where(t=>t.IsEnum).Select(t=>new{
+                            Name=t.FullName,
+                            Declared=t.Fields.Where(f=>f.IsLiteral).Select(f=>Convert.ToInt64(f.Constant?.Value??0)).OrderBy(v=>v).ToArray(),
+                            Collected=collected.TryGetValue(t,out var set)?set.ToArray():Array.Empty<long>()});
+                        File.WriteAllText(args[2],Newtonsoft.Json.JsonConvert.SerializeObject(rows,Newtonsoft.Json.Formatting.Indented));
+                    }
+                    return 0;
+                case "--dump-types":
+                    using(var module=dnlib.DotNet.ModuleDefMD.Load(args[1]))
+                    {
+                        var rows=module.GetTypes().Select(t=>new{
+                            Name=t.FullName,Base=t.BaseType?.FullName,IsEnum=t.IsEnum,
+                            Fields=t.Fields.Select(f=>new{Name=f.Name.String,Static=f.IsStatic,Literal=f.IsLiteral,
+                                Const=f.IsLiteral?f.Constant?.Value?.ToString():null,Type=f.FieldSig?.Type?.FullName})}).ToArray();
+                        File.WriteAllText(args[2],Newtonsoft.Json.JsonConvert.SerializeObject(rows,Newtonsoft.Json.Formatting.Indented));
+                    }
+                    return 0;
                 case "--map-worker": RebuiltValidation.MapMethods(args[1],args[2],args[3],args[4]);return 0;
                 case "--flow-worker": ControlFlowCleanupPass.Process(args[1],args[2],args[3]);return 0;
                 case "--self-test": return SelfTests.Run();
