@@ -158,49 +158,7 @@ internal static class SourceCompiler
     }
 
     internal static string[] DependencyDirectories(string assembly,string originalInput)
-    {
-        string originalDirectory=Path.GetDirectoryName(Path.GetFullPath(originalInput))!;
-        var directories=new List<string>{Path.GetDirectoryName(Path.GetFullPath(assembly))!,originalDirectory};
-        string config=originalInput+".config";
-        if(File.Exists(config))
-        {
-            // Read data only; do not activate AppDomain managers or config extensions.
-            var settings=new System.Xml.XmlReaderSettings {DtdProcessing=System.Xml.DtdProcessing.Prohibit,XmlResolver=null};
-            using var reader=System.Xml.XmlReader.Create(config,settings);
-            var xml=XDocument.Load(reader);
-            XNamespace ns="urn:schemas-microsoft-com:asm.v1";
-            foreach(string path in xml.Descendants(ns+"probing").SelectMany(p=>((string?)p.Attribute("privatePath")??"").Split(';')))
-            {
-                if(string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path))continue;
-                string directory=Path.GetFullPath(Path.Combine(originalDirectory,path.Trim()));
-                if(directory.StartsWith(originalDirectory.TrimEnd(Path.DirectorySeparatorChar)+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase)
-                    && Directory.Exists(directory))directories.Add(directory);
-            }
-        }
-        // Eazfuscator 的组件布局把依赖放在 Vendor/ 等子目录（例如
-        // Components\Gapotchenko.Eazfuscator.NET.dll 依赖
-        // Components\Vendor\Gapotchenko.FX.dll）。仅搜输入目录本身会漏掉，
-        // 这里在原始目录下做有界递归，把这些子目录也纳入探测路径。
-        AddSubdirectories(originalDirectory, directories, 0);
-        return directories.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    }
-
-    private static void AddSubdirectories(string root, List<string> directories, int depth)
-    {
-        const int MaxDepth = 4, MaxDirectories = 128;
-        if (depth >= MaxDepth || directories.Count >= MaxDirectories)
-            return;
-        IEnumerable<string> children;
-        try { children = Directory.EnumerateDirectories(root); }
-        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { return; }
-        foreach (string child in children)
-        {
-            if (directories.Count >= MaxDirectories)
-                return;
-            directories.Add(child);
-            AddSubdirectories(child, directories, depth + 1);
-        }
-    }
+        =>DependencyLoadScope.DependencyDirectories(assembly,originalInput);
 
     private sealed class DecompilerProgress : IProgress<DecompilationProgress>
     {

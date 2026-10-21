@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 
@@ -8,134 +9,118 @@ namespace EazFixer.Processors
 {
     internal class StringFixer : ProcessorBase
     {
-        private MethodDef _decrypterMethod;
+        private List<MethodDef> _decrypters;
+        public int RecoveredCount { get; private set; }
 
         protected override void InitializeInternal()
         {
-            //find method
-            if (!Flags.StrDecTok.IsNull)
-                _decrypterMethod = Ctx.Module.ResolveToken(Flags.StrDecTok) as MethodDef
-                                    ?? throw new Exception("StringDecrypter token set but method not found");
-            else
-                _decrypterMethod = StringFixUtils.FindStringDecryptMethod(Ctx.Module) ??
-                               throw new Exception("Could not find decrypter method");
+            _decrypters = !Flags.StrDecTok.IsNull
+                ? new List<MethodDef> { Ctx.Module.ResolveToken(Flags.StrDecTok) as MethodDef ?? throw new Exception("StringDecrypter token set but method not found") }
+                : StringFixUtils.FindStringDecryptMethods(Ctx.Module).ToList();
+            if (_decrypters.Count == 0) throw new ProtectionNotFoundException("No structurally matched string decoder found");
         }
 
         protected override void ProcessInternal()
         {
-            //a dictionary to cache all strings
-            var dictionary = new Dictionary<int, string>();
-
-            //get the decrypter method in a way in which we can invoke it
-            var decrypter = Utils.FindMethod(Ctx.Assembly, _decrypterMethod, new[] { typeof(int) }) ?? throw new Exception("Couldn't find decrypter method through reflection");
-
-            //store it so we can use it in the stacktrace patch
-            StacktracePatcher.PatchStackTraceGetMethod.MethodToReplace = decrypter;
-
-            Exception firstError = null;
-            int succeeded = 0;
-
-            //for every method with a body...
-            foreach (MethodDef meth in Utils.GetMethodsRecursive(Ctx.Module).Where(a => a.HasBody && a.Body.HasInstructions))
+            var methods = _decrypters.ToDictionary(method => method, method => Utils.FindMethod(Ctx.Assembly, method, new[] { typeof(int) }));
+            var dictionary = new Dictionary<Tuple<MethodDef, int>, string>();
+            var failures = new HashSet<Tuple<MethodDef, int>>();
+            var unavailable = new HashSet<MethodDef>();
+            int unresolved = 0, constructors = 0;
+            foreach (var method in Utils.GetMethodsRecursive(Ctx.Module).Where(item => item.HasBody && item.Body.HasInstructions))
             {
-                var instructions = meth.Body.Instructions;
-
-                //.. and every call to the decrypter ...
-                for (int i = 0; i < instructions.Count; i++)
+                var body = method.Body;
+                var targets = GetBoundaries(body);
+                var tracker = new ConstantArgumentTracker(body);
+                for (int index = 0; index < body.Instructions.Count; index++)
                 {
-                    var curr = instructions[i];
-                    if (curr.OpCode.Code != Code.Call && curr.OpCode.Code != Code.Callvirt)
-                        continue;
-
-                    //if it invokes the string decrypter method with an int parameter
-                    if (!(curr.Operand is IMethod md) || md.FullName != _decrypterMethod.FullName ||
-                        md.DeclaringType.DefinitionAssembly?.FullName != Ctx.Module.Assembly.FullName)
-                        continue;
-
-                    // 标准形状是 ldc.i4 紧邻 call；2026.2 有些构建会插入 nop/conv.i4，
-                    // 所以向前看最多 4 条，找到真正压栈的那条 ldc.i4。
-                    int idIndex;
-                    int val;
-                    if (!TryGetPushedInt32(instructions, i, out val, out idIndex))
-                        continue;
-
-                    //get the resulting string from either cache or invoking the decrypter method
-                    if (!dictionary.ContainsKey(val))
+                    var current = body.Instructions[index];
+                    if (targets.Contains(current)) tracker.Reset();
+                    int? argument = tracker.Top;
+                    tracker.Step(current, body);
+                    if (current.OpCode.Code != Code.Call || !(current.Operand is IMethod reference)) continue;
+                    var decoder = reference as MethodDef;
+                    if (decoder == null && reference.DeclaringType.DefinitionAssembly?.FullName == Ctx.Module.Assembly.FullName)
+                        decoder = _decrypters.FirstOrDefault(candidate => candidate.FullName == reference.FullName);
+                    if (decoder == null || !methods.TryGetValue(decoder, out var runtime)) continue;
+                    if (unavailable.Contains(decoder)) { unresolved++; continue; }
+                    if (!argument.HasValue || index > 0 && body.Instructions[index - 1].OpCode.Code == Code.Tailcall)
+                    { unresolved++; continue; }
+                    var key = Tuple.Create(decoder, argument.Value);
+                    if (failures.Contains(key)) { unresolved++; continue; }
+                    if (!dictionary.TryGetValue(key, out var value))
                     {
                         try
                         {
-                            dictionary[val] = (string)decrypter.Invoke(null, new object[] { val });
-                            succeeded++;
+                            if (runtime == null) throw new MissingMethodException("Could not resolve decoder metadata token");
+                            StacktracePatcher.PatchStackTraceGetMethod.MethodToReplace = runtime;
+                            value = (string)runtime.Invoke(null, new object[] { argument.Value });
+                            dictionary.Add(key, value);
                         }
-                        catch (Exception ex)
+                        catch (Exception error)
                         {
-                            // 单条解密失败（例如反调试对某个 id 抛异常）不影响其它调用点，
-                            // 但全部失败时要把真实原因抛出去，不能静默报成功/0。
-                            if (firstError == null)
-                                firstError = ex;
+                            failures.Add(key); unresolved++;
+                            var actual = error is TargetInvocationException && error.InnerException != null ? error.InnerException : error;
+                            if (actual is TypeInitializationException || runtime == null) unavailable.Add(decoder);
+                            Warn("Decoder " + decoder.MDToken + ", argument " + argument.Value + ": " + actual.GetType().Name + ": " + actual.Message);
                             continue;
                         }
                     }
-
-                    // check if str == .ctor due to eaz using string decryptor to call constructors
-                    if (dictionary[val] == ".ctor" && Flags.VirtFix) continue;
-
-                    //replace the instructions with the string
-                    instructions[idIndex].OpCode = OpCodes.Nop;
-                    instructions[idIndex].Operand = null;
-                    curr.OpCode = OpCodes.Ldstr;
-                    curr.Operand = dictionary[val];
+                    if (value == ".ctor" && Flags.VirtFix) { constructors++; continue; }
+                    // Keep the producers (and their side effects). Consume the proven
+                    // argument and push the decoded value. Existing branch/EH labels
+                    // keep referring to the original instruction objects.
+                    if (index > 0 && body.Instructions[index - 1].IsLdcI4() && !targets.Contains(current))
+                    {
+                        body.Instructions[index - 1].OpCode = OpCodes.Nop;
+                        body.Instructions[index - 1].Operand = null;
+                        current.OpCode = value == null ? OpCodes.Ldnull : OpCodes.Ldstr;
+                        current.Operand = value;
+                    }
+                    else
+                    {
+                        current.OpCode = OpCodes.Pop; current.Operand = null;
+                        body.Instructions.Insert(++index, value == null ? Instruction.Create(OpCodes.Ldnull) : Instruction.Create(OpCodes.Ldstr, value));
+                    }
+                    RecoveredCount++;
                 }
             }
-
-            if (succeeded == 0 && firstError != null)
-                throw new Exception("The string decrypter could not be invoked for any id: " + firstError.Message, firstError);
+            if (unresolved > 0 && failures.Count == 0) Warn(unresolved + " calls have unknown or control-flow-dependent arguments and were retained.");
+            Summary = "Detected " + _decrypters.Count + " decoder(s); restored " + RecoveredCount + " call(s); retained " + unresolved +
+                " unresolved and " + constructors + " VM constructor-name call(s). Runtime types preserved.";
+            // 全部调用点都解密失败时必须把真实原因抛出去，不能静默报成功/0。
+            if (RecoveredCount == 0 && failures.Count > 0)
+                throw new Exception("The string decrypter could not be invoked for any id: " + failures.Count + " failure(s); see warnings for details");
         }
 
-        /// <summary>
-        /// 找 call 之前压栈的 ldc.i4。标准形状是紧邻，但有些版本会插入 nop/conv.i4，
-        /// 所以向前看最多 4 条，跳过不影响整数值的指令。
-        /// </summary>
-        private static bool TryGetPushedInt32(IList<Instruction> instructions, int callIndex, out int value, out int index)
+        private static HashSet<Instruction> GetBoundaries(CilBody body)
         {
-            value = 0;
-            index = -1;
-            for (int i = callIndex - 1, steps = 0; i >= 0 && steps < 4; i--, steps++)
+            var targets = new HashSet<Instruction>();
+            foreach (var instruction in body.Instructions)
             {
-                var instruction = instructions[i];
-                if (instruction.IsLdcI4())
-                {
-                    value = instruction.GetLdcI4Value();
-                    index = i;
-                    return true;
-                }
-                switch (instruction.OpCode.Code)
-                {
-                    case Code.Nop:
-                    case Code.Conv_I4:
-                    case Code.Conv_U4:
-                    case Code.Conv_I8:
-                        continue;
-                    default:
-                        return false;
-                }
+                if (instruction.Operand is Instruction target) targets.Add(target);
+                else if (instruction.Operand is IList<Instruction> branches) foreach (var branch in branches) targets.Add(branch);
             }
-            return false;
+            foreach (var handler in body.ExceptionHandlers)
+            {
+                if (handler.TryStart != null) targets.Add(handler.TryStart);
+                if (handler.TryEnd != null) targets.Add(handler.TryEnd);
+                if (handler.HandlerStart != null) targets.Add(handler.HandlerStart);
+                if (handler.HandlerEnd != null) targets.Add(handler.HandlerEnd);
+                if (handler.FilterStart != null) targets.Add(handler.FilterStart);
+            }
+            return targets;
         }
 
         protected override void CleanupInternal()
         {
-            //check if virtfix is active so ignore cleaning
-            if (Flags.VirtFix)
-                throw new Exception("VirtFix enabled, Cannot remove method");
-
-            //ensure that the string decryptor isn't called anywhere
-            if (Utils.LookForReferences(Ctx.Module, _decrypterMethod))
-                throw new Exception("String decrypter is still being called");
-
-            //remove the string decryptor class
-            var stringType = _decrypterMethod.DeclaringType;
-            Ctx.Module.Types.Remove(stringType);
+            if (Flags.VirtFix) return;
+            foreach (var decoder in _decrypters)
+            {
+                if (Utils.LookForReferences(Ctx.Module, decoder)) continue;
+                // Removing an entire declaring type can delete unrelated helpers.
+                decoder.DeclaringType.Methods.Remove(decoder);
+            }
         }
     }
 }

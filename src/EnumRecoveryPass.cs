@@ -150,6 +150,45 @@ internal static class EnumRecoveryPass
                     stack.Add(EnumType(signature.RetType));
                     continue;
                 }
+                // InlineExpressionPass 会把静态整数叶子方法内联到调用点，于是
+                // "ldc.i4 + call" 变成 "ldc.i4 + 算术/宽度转换"。不建模这些运算的话，
+                // 后面的 stsfld/ret 就只能记录到 null，枚举取值凭空少一批。
+                case Code.Add: case Code.Add_Ovf: case Code.Add_Ovf_Un:
+                case Code.Sub: case Code.Sub_Ovf: case Code.Sub_Ovf_Un:
+                case Code.Mul: case Code.Mul_Ovf: case Code.Mul_Ovf_Un:
+                case Code.Div: case Code.Div_Un: case Code.Rem: case Code.Rem_Un:
+                case Code.And: case Code.Or: case Code.Xor:
+                case Code.Shl: case Code.Shr: case Code.Shr_Un:
+                {
+                    var right = Pop(stack);
+                    var left = Pop(stack);
+                    stack.Add(left is long l && right is long r ? Evaluate(code, l, r) : null);
+                    continue;
+                }
+                case Code.Neg: case Code.Not:
+                {
+                    var operand = Pop(stack);
+                    stack.Add(operand is long v ? unchecked(code == Code.Neg ? -v : ~v) : null);
+                    continue;
+                }
+                case Code.Conv_I1: case Code.Conv_U1: case Code.Conv_I2: case Code.Conv_U2:
+                case Code.Conv_I4: case Code.Conv_U4: case Code.Conv_I8: case Code.Conv_U8:
+                {
+                    var operand = Pop(stack);
+                    if (operand is long v)
+                        stack.Add(unchecked(code switch
+                        {
+                            Code.Conv_I1 => (long)(sbyte)v,
+                            Code.Conv_U1 => (long)(byte)v,
+                            Code.Conv_I2 => (long)(short)v,
+                            Code.Conv_U2 => (long)(ushort)v,
+                            Code.Conv_I4 => (long)(int)v,
+                            Code.Conv_U4 => (long)(uint)v,
+                            _ => v
+                        }));
+                    else stack.Add(null);
+                    continue;
+                }
                 case Code.Ceq: case Code.Cgt: case Code.Cgt_Un: case Code.Clt: case Code.Clt_Un:
                 case Code.Beq: case Code.Bne_Un: case Code.Bgt: case Code.Blt: case Code.Bge: case Code.Ble:
                 case Code.Bgt_Un: case Code.Blt_Un: case Code.Bge_Un: case Code.Ble_Un:
@@ -199,6 +238,22 @@ internal static class EnumRecoveryPass
         };
         for (int index = 0; index < pushes; index++) stack.Add(null);
     }
+
+    private static long? Evaluate(Code code, long left, long right) => code switch
+    {
+        Code.Add or Code.Add_Ovf or Code.Add_Ovf_Un => unchecked(left + right),
+        Code.Sub or Code.Sub_Ovf or Code.Sub_Ovf_Un => unchecked(left - right),
+        Code.Mul or Code.Mul_Ovf or Code.Mul_Ovf_Un => unchecked(left * right),
+        Code.Div or Code.Div_Un => right == 0 ? null : unchecked(left / right),
+        Code.Rem or Code.Rem_Un => right == 0 ? null : unchecked(left % right),
+        Code.And => left & right,
+        Code.Or => left | right,
+        Code.Xor => left ^ right,
+        Code.Shl => unchecked(left << (int)(right & 63)),
+        Code.Shr => left >> (int)(right & 63),
+        Code.Shr_Un => unchecked((long)((ulong)left >> (int)(right & 63))),
+        _ => null
+    };
 
     private static void Record(TypeDef? type, object? value, Dictionary<TypeDef, SortedSet<long>> values)
     {

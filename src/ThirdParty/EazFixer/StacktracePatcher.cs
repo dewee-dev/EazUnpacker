@@ -20,6 +20,7 @@ namespace EazFixer
         {
             _harmony?.UnpatchAll(_harmony.Id);
             _harmony = null;
+            PatchStackTraceGetMethod.MethodToReplace = null;
         }
 
         [HarmonyPatch(typeof(StackFrame), "GetMethod")]
