@@ -1,3 +1,4 @@
+using System.Linq;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
@@ -23,6 +24,7 @@ internal sealed class RecoveredProjectDecompiler : WholeProjectDecompiler
         decompiler.AstTransforms.Add(new ExceptionCompatibility());
         decompiler.AstTransforms.Add(new MetadataCompatibility());
         decompiler.AstTransforms.Add(new LocalInitializationCompatibility());
+        decompiler.AstTransforms.Add(new RefOperandCompatibility());
         decompiler.AstTransforms.Add(new SourceDataCompatibility(data));
         decompiler.AstTransforms.Add(new SeparateAsyncCompatibility(stats));
         return decompiler;
@@ -87,6 +89,27 @@ internal sealed class LocalInitializationCompatibility : DepthFirstAstVisitor,IA
                 variable.Initializer=new DirectionExpression(FieldDirection.Ref,new IdentifierExpression(name));
             }
             else if(declaration.Type.ToString()!="var")variable.Initializer=new DefaultValueExpression(declaration.Type.Clone());
+        }
+    }
+}
+
+/// <summary>
+/// ILSpy 无法把"运算符带的 byref 操作数"还原成 C#，会原样输出
+/// <c>x &gt;= (ref right)</c> 这类表达式，编译直接报 CS1525。
+/// 这些运算符（例如 Gapotchenko.FX.Math.Intervals.ValueInterval 的比较运算）的参数
+/// 在元数据里带 IsReadOnly，也就是 C# 的 in 参数：原始源码就是普通的运算符写法，
+/// 由编译器自己生成 ldloca。所以把 DirectionExpression 剥掉即可，语义不变。
+/// </summary>
+internal sealed class RefOperandCompatibility : DepthFirstAstVisitor,IAstTransform
+{
+    public void Run(AstNode root,TransformContext context)
+    {
+        foreach(var operatorExpression in root.DescendantsAndSelf.OfType<BinaryOperatorExpression>().ToArray())
+        {
+            if(operatorExpression.Right is DirectionExpression {FieldDirection:FieldDirection.Ref} right)
+                operatorExpression.Right=right.Expression.Detach();
+            if(operatorExpression.Left is DirectionExpression {FieldDirection:FieldDirection.Ref} left)
+                operatorExpression.Left=left.Expression.Detach();
         }
     }
 }

@@ -19,7 +19,14 @@ internal static class SourceCompiler
         foreach(string directory in searchDirectories)resolver.AddSearchDirectory(directory);
         var settings=new DecompilerSettings {UseSdkStyleProjectFormat=true,UseDebugSymbols=true,
             ThrowOnAssemblyResolveErrors=false,RemoveDeadCode=true,RemoveDeadStores=true,AsyncAwait=true,YieldReturn=false,
-            AnonymousMethods=false,LocalFunctions=false,InitAccessors=false,NamedArguments=false,NonTrailingNamedArguments=false,OptionalArguments=false};
+            AnonymousMethods=false,LocalFunctions=false,InitAccessors=false,NamedArguments=false,NonTrailingNamedArguments=false,OptionalArguments=false,
+            // 混淆后的结构体带 IsReadOnlyAttribute，但字段没有 initonly（IL 允许，C# 不允许），
+            // 反编译成 "readonly struct" 会报 CS8340。关掉这个修饰符推断即可。
+            IntroduceReadonlyAndInModifiers=false,
+            // ILSpy 会为"求值顺序与原程序集不一致"的调用插入 ref 局部变量（>= (ref right)），
+            // 但混淆后的代码里这些并不是真正的 ref 局部，写成 C# 直接语法错误（CS1525）。
+            // 关掉后仍按普通表达式输出。
+            UseRefLocalsForAccurateOrderOfEvaluation=false};
         var pdb=Path.ChangeExtension(assembly,".pdb");
         var data=new SourceDataPlan(assembly);
         var readability=new ReadabilityStats();

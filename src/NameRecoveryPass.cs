@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.RegularExpressions;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
@@ -259,6 +259,12 @@ internal static class NameRecoveryPass
                 }
             }
         }
+        // 混淆器把所有成员名抹成同一个字符串。重命名后接口成员与实现类成员可能
+        // 拿到不同的名字，反编译出来就报 CS0535/CS0737（没实现接口成员 / 实现
+        // 成员不是公共的）。这里以模块内接口为准做一次契约同步，同步过程中可能
+        // 产生新的重名（同名同签名成员），最后再按 C# 的要求去一次重。
+        ContractCompatibility.Normalize(module,types,changes,originalMethods,originalProperties);
+        ResolveDuplicateMemberNames(types,changes,originalMethods);
         foreach (var pair in typeReferences) {pair.Reference.Name=pair.Definition!.Name; pair.Reference.Namespace=pair.Definition.Namespace;}
         foreach(var pair in attributeTypes)
             pair.Owner.CustomAttributes[pair.Index]=new CustomAttribute(pair.Attribute.Constructor,new[]{new CAArgument(pair.Attribute.Constructor.MethodSig.Params[0],pair.Definition.ToTypeSig())});
@@ -279,10 +285,12 @@ internal static class NameRecoveryPass
             typeStrings[originalTypes[type]] = type.FullName;
             typeStrings[originalReflectionNames[type]] = type.ReflectionFullName;
         }
-        var members = types.SelectMany(t => t.Methods.Select(m => (Old:originalMethods[m], New:m.Name.String, Type:t)))
-            .Concat(types.SelectMany(t => t.Fields.Select(f => (Old:originalFields[f], New:f.Name.String, Type:t))))
-            .Concat(types.SelectMany(t => t.Properties.Select(p => (Old:originalProperties[p], New:p.Name.String, Type:t))))
-            .Concat(types.SelectMany(t => t.Events.Select(e => (Old:originalEvents[e], New:e.Name.String, Type:t))))
+        // 契约同步可能会新增/删除 PropertyDef，原名字字典里没有这些条目，
+        // 统一用 TryGetValue 取，取不到就按"新增成员"跳过。
+        var members = types.SelectMany(t => t.Methods.Where(m => originalMethods.ContainsKey(m)).Select(m => (Old:originalMethods[m], New:m.Name.String, Type:t)))
+            .Concat(types.SelectMany(t => t.Fields.Where(f => originalFields.ContainsKey(f)).Select(f => (Old:originalFields[f], New:f.Name.String, Type:t))))
+            .Concat(types.SelectMany(t => t.Properties.Where(p => originalProperties.ContainsKey(p)).Select(p => (Old:originalProperties[p], New:p.Name.String, Type:t))))
+            .Concat(types.SelectMany(t => t.Events.Where(e => originalEvents.ContainsKey(e)).Select(e => (Old:originalEvents[e], New:e.Name.String, Type:t))))
             .Where(p => p.Old != p.New).ToLookup(p => p.Old);
         foreach (var method in types.SelectMany(t=>t.Methods).Where(m=>m.HasBody))
         {
@@ -306,6 +314,40 @@ internal static class NameRecoveryPass
             foreach(var type in types.OrderByDescending(t=>originalTypes[t].Length))
                 if(resource.Name.String.StartsWith(originalReflectionNames[type]+".",StringComparison.Ordinal))
                 {resource.Name=type.ReflectionFullName+resource.Name.String.Substring(originalReflectionNames[type].Length);break;}
+        // 显式接口实现的签名必须和接口成员逐字一致，元组元素名也算签名的一部分。
+        // 混淆器保留了实现侧的 TupleElementNamesAttribute、接口侧却没有，反编译
+        // 出来就是 CS8141。显式实现靠 MethodImpl 分派，去掉元素名不影响行为；
+        // 接口侧本身带元素名时保留不动，避免反向制造同样的错误。
+        const string tupleElementNames="System.Runtime.CompilerServices.TupleElementNamesAttribute";
+        foreach(var method in types.SelectMany(t=>t.Methods))
+        {
+            if(method.Overrides.Count==0)continue;
+            bool contractHasNames=method.Overrides.Any(o=>o.MethodDeclaration.ResolveMethodDef() is { } declaration
+                && declaration.CustomAttributes.Any(a=>a.TypeFullName==tupleElementNames));
+            if(contractHasNames)continue;
+            for(int i=method.CustomAttributes.Count-1;i>=0;i--)
+                if(method.CustomAttributes[i].TypeFullName==tupleElementNames)method.CustomAttributes.RemoveAt(i);
+        }
+        // Eazfuscator 还会把迭代器状态机类型改坏：IteratorStateMachineAttribute 里引用的
+        // 泛型实参个数和类型定义对不上（typeof(Class123<,>) 但 Class123 只有 1 个参数），
+        // 反编译出来是 CS0308。该属性只供编译器和调试器使用，删掉不影响运行行为。
+        const string iteratorStateMachine="System.Runtime.CompilerServices.IteratorStateMachineAttribute";
+        foreach(var method in types.SelectMany(t=>t.Methods))
+            for(int i=method.CustomAttributes.Count-1;i>=0;i--)
+            {
+                var attribute=method.CustomAttributes[i];
+                if(attribute.TypeFullName!=iteratorStateMachine || attribute.ConstructorArguments.Count!=1)continue;
+                var argument=attribute.ConstructorArguments[0].Value;
+                TypeDef? definition=argument switch
+                {
+                    GenericInstSig generic=>generic.GenericType.TypeDefOrRef.ResolveTypeDef(),
+                    TypeDefOrRefSig reference=>reference.TypeDefOrRef.ResolveTypeDef(),
+                    ITypeDefOrRef reference=>reference.ResolveTypeDef(),
+                    _=>null
+                };
+                int arguments=argument is GenericInstSig instance?instance.GenericArguments.Count:0;
+                if(definition!=null && definition.GenericParameters.Count!=arguments)method.CustomAttributes.RemoveAt(i);
+            }
         if(module.PdbState==null)module.CreatePdbState(PdbFileKind.PortablePDB);
         // 控制流折叠会改变分支距离，原来的短分支(br.s)可能越界，写盘时抛
         // "Target instruction is too far away"。写盘前统一转成长分支。
@@ -330,6 +372,32 @@ internal static class NameRecoveryPass
             if(method==null || !NeedsName(originalMethods[method]))return;
             method.Name=name;
             foreach(var change in changes.Where(c=>c.Kind=="Method" && c.Token==method.MDToken.ToString()))change.Renamed=name;
+        }
+    }
+
+    /// <summary>
+    /// C# 不允许同一个类型里出现两个同名同参数的成员，IL 允许（Eazfuscator 就是靠
+    /// 这一点让反编译结果编不过）。把重复的那个改成唯一名字：显式接口实现靠
+    /// MethodImpl 分派，改名不影响调用。
+    /// </summary>
+    private static void ResolveDuplicateMemberNames(TypeDef[] types,List<NameChange> changes,Dictionary<MethodDef,string> originalMethods)
+    {
+        foreach(var type in types)
+        {
+            var groups=type.Methods.GroupBy(m=>m.Name.String+"|"+string.Join(",",m.MethodSig.Params.Select(p=>p.FullName)),StringComparer.Ordinal);
+            foreach(var group in groups.Where(g=>g.Count()>1))
+            {
+                var methods=group.ToArray();
+                // 保留对外可见、且不是显式实现的那个
+                var keep=methods.FirstOrDefault(m=>!m.IsPrivate && m.Overrides.Count==0) ?? methods[0];
+                foreach(var method in methods.Where(m=>m!=keep))
+                {
+                    string name=Unique(method.Name.String+"_",type.Methods.Where(m=>m!=method).Select(m=>m.Name.String));
+                    Add(changes,"Method",method,originalMethods.TryGetValue(method,out var old)?old:method.Name.String,
+                        name,"duplicate signature in one type; C# requires unique member names");
+                    method.Name=name;
+                }
+            }
         }
     }
 

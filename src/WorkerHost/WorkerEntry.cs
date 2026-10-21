@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using EazFixer;
 using EazyDevirt;
 using Newtonsoft.Json;
@@ -56,10 +56,36 @@ internal static class WorkerEntry
                     using(var module=dnlib.DotNet.ModuleDefMD.Load(args[1]))
                     {
                         var rows=module.GetTypes().Select(t=>new{
-                            Name=t.FullName,Base=t.BaseType?.FullName,IsEnum=t.IsEnum,
+                            Name=t.FullName,Base=t.BaseType?.FullName,IsEnum=t.IsEnum,Vis=t.Visibility.ToString(),
                             Fields=t.Fields.Select(f=>new{Name=f.Name.String,Static=f.IsStatic,Literal=f.IsLiteral,
                                 Const=f.IsLiteral?f.Constant?.Value?.ToString():null,Type=f.FieldSig?.Type?.FullName})}).ToArray();
                         File.WriteAllText(args[2],Newtonsoft.Json.JsonConvert.SerializeObject(rows,Newtonsoft.Json.Formatting.Indented));
+                    }
+                    return 0;
+                case "--dump-members":
+                    using(var module=dnlib.DotNet.ModuleDefMD.Load(args[1]))
+                    {
+                        var type=module.Find(args[2],false) ?? throw new ArgumentException("Type not found: "+args[2]);
+                        var sb=new System.Text.StringBuilder();
+                        sb.AppendLine("Type: "+type.FullName+"  base="+type.BaseType?.FullName);
+                        sb.AppendLine("--- methods ---");
+                        foreach(var m in type.Methods)
+                            sb.AppendLine(m.Name.String+" | "+m.MethodSig+" | "+m.Attributes+" | impl="+m.ImplAttributes+" | rid="+m.MDToken.Rid);
+                        sb.AppendLine("--- properties ---");
+                        foreach(var p in type.Properties)
+                            sb.AppendLine(p.Name.String+" : "+p.PropertySig+" | "
+                                +(p.GetMethod==null?"-":"get="+p.GetMethod.Name.String)+" "
+                                +(p.SetMethod==null?"-":"set="+p.SetMethod.Name.String));
+                        sb.AppendLine("--- events ---");
+                        foreach(var e in type.Events)
+                            sb.AppendLine(e.Name.String+" : "+e.EventType+" | add="+(e.AddMethod?.Name.String??"-")+" remove="+(e.RemoveMethod?.Name.String??"-"));
+                        sb.AppendLine("--- interfaces ---");
+                        foreach(var i in type.Interfaces)sb.AppendLine(i.Interface.FullName);
+                        sb.AppendLine("--- method impls ---");
+                        foreach(var m in type.Methods)
+                            foreach(var ov in m.Overrides)
+                                sb.AppendLine(m.Name.String+"  ->  "+ov.MethodDeclaration.FullName);
+                        File.WriteAllText(args[3],sb.ToString());
                     }
                     return 0;
                 case "--map-worker": RebuiltValidation.MapMethods(args[1],args[2],args[3],args[4]);return 0;
